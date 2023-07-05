@@ -1,0 +1,114 @@
+
+
+!apt-get install openjdk-8-jdk-headless -qq > /dev/null
+!wget -q https://dlcdn.apache.org/spark/spark-3.2.4/spark-3.2.4-bin-hadoop3.2.tgz
+!tar xf spark-3.2.4-bin-hadoop3.2.tgz
+
+!pip install -q findspark
+
+import os
+
+os.environ["JAVA_HOME"] = "/usr/lib/jvm/java-8-openjdk-amd64"
+os.environ["SPARK_HOME"] = "/content/spark-3.2.4-bin-hadoop3.2"
+
+try:
+    # Inicia sessão do Spark
+    import findspark
+    findspark.init()
+    from pyspark.sql import SparkSession
+    from pyspark.sql.functions import to_timestamp, desc, when, current_timestamp
+
+    spark = SparkSession.builder.master("local[*]").getOrCreate()
+
+    # compatibilidade
+    spark.conf.set("spark.sql.legacy.timeParserPolicy", "LEGACY")
+
+    # Local do Parquet no Google Drive
+    parquet_file_path = '/content/drive/MyDrive/OriginaisNetflix - Python.parquet'
+
+    # Lendo arquivo Parquet usando o Spark
+    df = spark.read.parquet(parquet_file_path)
+
+    # 1. Transformar os campos "Premiere" e "dt_inclusao" de string para datetime.
+    df = df.withColumn("Premiere", to_timestamp(df["Premiere"], 'd-MMM-yy'))
+    df = df.withColumn("dt_inclusao", to_timestamp(df["dt_inclusao"], "yyyy-MM-dd'T'HH:mm:ss"))
+
+    # 2. Ordenar os dados por ativos e gênero de forma decrescente, 0 = inativo e 1 = ativo, todos com número 1 devem aparecer primeiro.
+    df = df.orderBy([desc("Active"), desc("Genre")])
+
+    # 3. Remover linhas duplicadas e trocar o resultado das linhas que tiverem a coluna "Seasons" de "TBA" para "a ser anunciado".
+    # Verifica se existem linhas duplicadas, se tiver ele remove
+    if df.count() > df.dropDuplicates().count():
+        print("O DataFrame tem linhas duplicadas.")
+    else:
+        print("O DataFrame não tem linhas duplicadas.")
+
+    # Substitui valores na coluna "Seasons"
+    df = df.withColumn("Seasons", when(df["Seasons"] == "TBA", "a ser anunciado").otherwise(df["Seasons"]))
+
+    # 4. Criar uma coluna nova chamada "Data de Alteração" e dentro dela um timestamp.
+    df = df.withColumn("Data de Alteração", current_timestamp())
+
+    # 5. Trocar os nomes das colunas de inglês para português, exemplo: "Title" para "Título"(com acentuação).
+    # Dicionário que mapeia as colunas em inglês para os nomes das colunas em português
+    column_map = {
+        "Title": "Título",
+        "Genre": "Gênero",
+        "GenreLabels": "Rótulos de Gênero",
+        "Premiere": "Pré-estreia",
+        "Seasons": "Temporadas",
+        "SeasonsParsed": "Temporadas Analisadas",
+        "EpisodesParsed": "Episódios Analisadas",
+        "Length": "Comprimento",
+        "MinLength": "Comprimento Mínimo",
+        "MaxLength": "Comprimento Máximo",
+        "Active": "Ativo",
+        "Table": "Tabela",
+        "Language": "Linguagem",
+        "dt_inclusao": "Data de Inclusão"
+    }
+
+    # Renomeia as colunas
+    for english_name, portuguese_name in column_map.items():
+        df = df.withColumnRenamed(english_name, portuguese_name)
+
+# 6. Testar e verificar se existe algum erro de processamento do spark e identificar onde pode ter ocorrido o erro.
+except Exception as erro:
+    print("Ocorreu um erro:", erro)
+else:
+    print("Carga concluída com sucesso")
+
+# 7. Criar apenas 1 .csv com as seguintes colunas que foram nomeadas anteriormente 
+#   Title, Genre, Seasons, Premiere, Language, Active, Status, dt_inclusao, Data de Alteração 
+#   as colunas devem estar em português com header e separadas por ";".
+# Seleciona as colunas
+selected_columns = ["Título", "Gênero", "Temporadas", "Pré-estreia", "Linguagem", "Ativo", "Status", "Data de Inclusão", "Data de Alteração"]
+df = df.select(selected_columns)
+# Caminho
+csv_file_path = "/tmp/data.csv"
+# Salva
+df.write.mode("overwrite").csv(
+    csv_file_path,
+    sep=";",
+    header=True,
+    encoding="UTF-8"
+)
+
+# 8. Inserir esse .csv dentro de um bucket do AWS s3
+#import boto3
+
+# Inicializa o cliente do Amazon S3
+#s3 = boto3.client(
+#    "s3",
+#    aws_access_key_id="ACCESS_KEY_ID",
+#    aws_secret_access_key="SECRET_ACCESS_KEY"
+#)
+
+# Define o nome do bucket e o caminho do arquivo no bucket
+#bucket_name = "my-bucket"
+#file_path = "data.csv"
+
+# Abre o arquivo CSV em modo binário
+#with open("/tmp/data.csv", "rb") as file:
+#    # Faz o upload do arquivo para o bucket do Amazon S3
+#    s3.upload_fileobj(file, bucket_name, file_path)
